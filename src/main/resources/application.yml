@@ -18,6 +18,10 @@ harness:
       X-Client-Source: SpringBootHarness
   engine:
     max-iterations: 5
+  memory:
+    enabled: true
+    file-path: ${HARNESS_MEMORY_FILE:AGENTS.md}
+    reflection-enabled: true
 
 otel:
   exporter:

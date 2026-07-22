@@ -3,6 +3,7 @@ package com.example.demo.harness;
 import com.example.demo.config.HarnessProperties;
 import com.example.demo.llm.OpenAiLlmClientService;
 import com.example.demo.mcp.McpHttpClientService;
+import com.example.demo.memory.MemoryService;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
@@ -19,15 +20,18 @@ public class HarnessEngine {
 
     private final OpenAiLlmClientService llmClient;
     private final McpHttpClientService mcpClient;
+    private final MemoryService memoryService;
     private final HarnessProperties properties;
     private final Tracer tracer;
 
     public HarnessEngine(OpenAiLlmClientService llmClient,
                          McpHttpClientService mcpClient,
+                         MemoryService memoryService,
                          HarnessProperties properties,
                          Tracer tracer) {
         this.llmClient = llmClient;
         this.mcpClient = mcpClient;
+        this.memoryService = memoryService;
         this.properties = properties;
         this.tracer = tracer;
     }
@@ -38,6 +42,7 @@ public class HarnessEngine {
                 .startSpan();
 
         List<Map<String, Object>> executionHistory = new ArrayList<>();
+        List<String> newLessonsLearned = new ArrayList<>();
 
         try (Scope scope = rootSpan.makeCurrent()) {
             log.info("Starting Harness execution for intent: {}", userIntent);
@@ -46,22 +51,30 @@ public class HarnessEngine {
             Map<String, Object> availableTools = mcpClient.listTools();
             rootSpan.setAttribute("harness.mcp.tools_available", availableTools.containsKey("tools"));
 
-            // Step 2: Assemble System & User Context
+            // Step 2: Load AGENTS.md / MEMORY.md persistent memory
+            String agentMemory = memoryService.loadMemory();
+            rootSpan.setAttribute("harness.memory_active", !agentMemory.isBlank());
+
+            // Step 3: Assemble System & User Context with Injected Memory
+            StringBuilder systemPrompt = new StringBuilder();
+            systemPrompt.append("You are an autonomous agent operating within a Harness Engineering system. ")
+                    .append("Your goal is to solve the user's intent reliably using available MCP tools. ")
+                    .append("Follow verification loops, check outputs, and avoid repeating failing tool calls.\n\n");
+
+            if (!agentMemory.isBlank()) {
+                systemPrompt.append("=== PERSISTENT MEMORY & GUIDELINES (from AGENTS.md) ===\n")
+                        .append(agentMemory)
+                        .append("\n=======================================================\n");
+            }
+
             List<Map<String, Object>> messages = new ArrayList<>();
-            messages.add(Map.of(
-                    "role", "system",
-                    "content", "You are an autonomous agent operating within a Harness Engineering system. " +
-                               "Your goal is to solve the user's intent reliably using available MCP tools. " +
-                               "Follow verification loops, check outputs, and avoid repeating failing tool calls."
-            ));
-            messages.add(Map.of(
-                    "role", "user",
-                    "content", userIntent
-            ));
+            messages.add(Map.of("role", "system", "content", systemPrompt.toString()));
+            messages.add(Map.of("role", "user", "content", userIntent));
 
             int maxIterations = properties.getEngine().getMaxIterations();
             int currentIteration = 0;
             String finalAnswer = null;
+            boolean encounteredError = false;
 
             while (currentIteration < maxIterations) {
                 currentIteration++;
@@ -92,6 +105,10 @@ public class HarnessEngine {
 
                             log.info("Harness step {}: LLM requested MCP Tool call [{}]", currentIteration, functionName);
                             String toolResult = mcpClient.executeTool(functionName, arguments);
+
+                            if (toolResult.startsWith("Error")) {
+                                encounteredError = true;
+                            }
 
                             messages.add(Map.of(
                                     "role", "assistant",
@@ -129,6 +146,7 @@ public class HarnessEngine {
                     }
                 } catch (Exception e) {
                     loopSpan.recordException(e);
+                    encounteredError = true;
                     log.error("Error during harness loop step {}: {}", currentIteration, e.getMessage(), e);
                     executionHistory.add(Map.of(
                             "iteration", currentIteration,
@@ -146,11 +164,18 @@ public class HarnessEngine {
                 rootSpan.setAttribute("harness.status", "MAX_ITERATIONS_REACHED");
             }
 
+            // Step 4: Post-Run Self-Reflection Step for Self-Improvement
+            if (properties.getMemory().isReflectionEnabled() && (encounteredError || currentIteration > 1)) {
+                performSelfReflection(userIntent, executionHistory, newLessonsLearned);
+            }
+
             return Map.of(
                     "intent", userIntent,
                     "finalAnswer", finalAnswer,
                     "iterationsCount", currentIteration,
                     "maxIterations", maxIterations,
+                    "memoryUsed", !agentMemory.isBlank(),
+                    "newLessonsLearned", newLessonsLearned,
                     "executionTrace", executionHistory
             );
 
@@ -164,6 +189,36 @@ public class HarnessEngine {
             );
         } finally {
             rootSpan.end();
+        }
+    }
+
+    private void performSelfReflection(String intent, List<Map<String, Object>> trace, List<String> lessonsOutput) {
+        Span span = tracer.spanBuilder("harness.self_reflection").startSpan();
+        try (Scope scope = span.makeCurrent()) {
+            log.info("Running Harness Self-Reflection step to extract insights for AGENTS.md");
+
+            List<Map<String, Object>> reflectionMessages = List.of(
+                    Map.of("role", "system", "content", "You are an AI Harness Evaluator. Analyze execution logs to find actionable rules for AGENTS.md."),
+                    Map.of("role", "user", "content", "Review execution trace for intent: '" + intent + "'. Trace: " + trace +
+                            "\nDid any tool call fail or require correction? If yes, summarize the lesson in 1 sentence starting with 'LESSON:'. If none, reply 'NONE'.")
+            );
+
+            Map<String, Object> response = llmClient.chatCompletion(reflectionMessages, null);
+            Map<String, Object> msg = extractChoiceMessage(response);
+            if (msg != null) {
+                String reflectionText = (String) msg.get("content");
+                if (reflectionText != null && reflectionText.contains("LESSON:")) {
+                    String lesson = reflectionText.substring(reflectionText.indexOf("LESSON:") + 7).trim();
+                    memoryService.appendLesson(lesson);
+                    lessonsOutput.add(lesson);
+                    span.setAttribute("harness.lesson_added", lesson);
+                }
+            }
+        } catch (Exception e) {
+            span.recordException(e);
+            log.warn("Self-reflection step skipped/failed: {}", e.getMessage());
+        } finally {
+            span.end();
         }
     }
 

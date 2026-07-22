@@ -13,6 +13,7 @@ public class HarnessProperties {
     private Llm llm = new Llm();
     private Mcp mcp = new Mcp();
     private Engine engine = new Engine();
+    private Memory memory = new Memory();
 
     public Llm getLlm() {
         return llm;
@@ -36,6 +37,14 @@ public class HarnessProperties {
 
     public void setEngine(Engine engine) {
         this.engine = engine;
+    }
+
+    public Memory getMemory() {
+        return memory;
+    }
+
+    public void setMemory(Memory memory) {
+        this.memory = memory;
     }
 
     public static class Llm {
@@ -134,6 +143,36 @@ public class HarnessProperties {
 
         public void setMaxIterations(int maxIterations) {
             this.maxIterations = maxIterations;
+        }
+    }
+
+    public static class Memory {
+        private boolean enabled = true;
+        private String filePath = "AGENTS.md";
+        private boolean reflectionEnabled = true;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getFilePath() {
+            return filePath;
+        }
+
+        public void setFilePath(String filePath) {
+            this.filePath = filePath;
+        }
+
+        public boolean isReflectionEnabled() {
+            return reflectionEnabled;
+        }
+
+        public void setReflectionEnabled(boolean reflectionEnabled) {
+            this.reflectionEnabled = reflectionEnabled;
         }
     }
 }

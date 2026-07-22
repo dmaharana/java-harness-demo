@@ -37,7 +37,10 @@ public class HarnessController {
                 "llmModel", harnessProperties.getLlm().getModel(),
                 "mcpServerUrl", harnessProperties.getMcp().getServerUrl(),
                 "configuredHeaders", harnessProperties.getMcp().getHeaders().keySet(),
-                "maxIterations", harnessProperties.getEngine().getMaxIterations()
+                "maxIterations", harnessProperties.getEngine().getMaxIterations(),
+                "memoryEnabled", harnessProperties.getMemory().isEnabled(),
+                "memoryFilePath", harnessProperties.getMemory().getFilePath(),
+                "reflectionEnabled", harnessProperties.getMemory().isReflectionEnabled()
         ));
     }
 }
