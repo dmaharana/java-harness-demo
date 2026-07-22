@@ -1,0 +1,27 @@
+server:
+  port: 8080
+
+harness:
+  llm:
+    base-url: ${LLM_BASE_URL:https://api.openai.com/v1}
+    model: ${LLM_MODEL:gpt-4o}
+    api-key: ${LLM_API_KEY:sk-proj-placeholder}
+    temperature: 0.2
+    max-tokens: 2000
+  mcp:
+    server-url: ${MCP_SERVER_URL:http://localhost:8081/mcp}
+    connect-timeout-ms: 5000
+    read-timeout-ms: 30000
+    headers:
+      Authorization: ${MCP_AUTH_HEADER:Bearer default-mcp-token}
+      X-Tenant-ID: ${MCP_TENANT_ID:default-tenant}
+      X-Client-Source: SpringBootHarness
+  engine:
+    max-iterations: 5
+
+otel:
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}
+  service:
+    name: java-harness-demo
