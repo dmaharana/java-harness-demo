@@ -2,6 +2,7 @@ package com.example.demo.controller;
 
 import com.example.demo.config.HarnessProperties;
 import com.example.demo.harness.HarnessEngine;
+import com.example.demo.mcp.McpHttpClientService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -13,10 +14,14 @@ public class HarnessController {
 
     private final HarnessEngine harnessEngine;
     private final HarnessProperties harnessProperties;
+    private final McpHttpClientService mcpHttpClientService;
 
-    public HarnessController(HarnessEngine harnessEngine, HarnessProperties harnessProperties) {
+    public HarnessController(HarnessEngine harnessEngine,
+                             HarnessProperties harnessProperties,
+                             McpHttpClientService mcpHttpClientService) {
         this.harnessEngine = harnessEngine;
         this.harnessProperties = harnessProperties;
+        this.mcpHttpClientService = mcpHttpClientService;
     }
 
     @PostMapping("/intent")
@@ -36,6 +41,7 @@ public class HarnessController {
                 "llmBaseUrl", harnessProperties.getLlm().getBaseUrl(),
                 "llmModel", harnessProperties.getLlm().getModel(),
                 "mcpServerUrl", harnessProperties.getMcp().getServerUrl(),
+                "mcpToolCount", mcpHttpClientService.getAvailableTools().size(),
                 "configuredHeaders", harnessProperties.getMcp().getHeaders().keySet(),
                 "maxIterations", harnessProperties.getEngine().getMaxIterations(),
                 "memoryEnabled", harnessProperties.getMemory().isEnabled(),
@@ -44,3 +50,4 @@ public class HarnessController {
         ));
     }
 }
+

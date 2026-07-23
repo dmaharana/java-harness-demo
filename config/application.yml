@@ -1,10 +1,10 @@
 server:
-  port: 8080
+  port: 8081
 
 harness:
   llm:
-    base-url: ${LLM_BASE_URL:https://api.openai.com/v1}
-    model: ${LLM_MODEL:gpt-4o}
+    base-url: ${LLM_BASE_URL:http://localhost:11434/v1}
+    model: ${LLM_MODEL:qwen3:0.6b}
     api-key: ${LLM_API_KEY:sk-proj-placeholder}
     temperature: 0.2
     max-tokens: 2000

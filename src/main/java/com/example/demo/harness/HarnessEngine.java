@@ -48,8 +48,9 @@ public class HarnessEngine {
             log.info("Starting Harness execution for intent: {}", userIntent);
 
             // Step 1: Discover Tools from MCP Server
-            Map<String, Object> availableTools = mcpClient.listTools();
-            rootSpan.setAttribute("harness.mcp.tools_available", availableTools.containsKey("tools"));
+            Map<String, Object> availableToolsResponse = mcpClient.listTools();
+            List<Map<String, Object>> toolsList = mcpClient.extractTools(availableToolsResponse);
+            rootSpan.setAttribute("harness.mcp.tools_available", !toolsList.isEmpty());
 
             // Step 2: Load AGENTS.md / MEMORY.md persistent memory
             String agentMemory = memoryService.loadMemory();
