@@ -4,6 +4,7 @@ import com.example.demo.config.HarnessProperties;
 import com.example.demo.llm.OpenAiLlmClientService;
 import com.example.demo.mcp.McpHttpClientService;
 import com.example.demo.memory.MemoryService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
@@ -23,6 +24,7 @@ public class HarnessEngine {
     private final MemoryService memoryService;
     private final HarnessProperties properties;
     private final Tracer tracer;
+    private final ObjectMapper objectMapper;
 
     public HarnessEngine(OpenAiLlmClientService llmClient,
                          McpHttpClientService mcpClient,
@@ -34,6 +36,7 @@ public class HarnessEngine {
         this.memoryService = memoryService;
         this.properties = properties;
         this.tracer = tracer;
+        this.objectMapper = new ObjectMapper();
     }
 
     public Map<String, Object> executeIntent(String userIntent) {
@@ -50,7 +53,12 @@ public class HarnessEngine {
             // Step 1: Discover Tools from MCP Server
             Map<String, Object> availableToolsResponse = mcpClient.listTools();
             List<Map<String, Object>> toolsList = mcpClient.extractTools(availableToolsResponse);
+            if (toolsList.isEmpty()) {
+                toolsList = mcpClient.getAvailableTools();
+            }
             rootSpan.setAttribute("harness.mcp.tools_available", !toolsList.isEmpty());
+
+            List<Map<String, Object>> openAiTools = formatToolsForOpenAi(toolsList);
 
             // Step 2: Load AGENTS.md / MEMORY.md persistent memory
             String agentMemory = memoryService.loadMemory();
@@ -86,8 +94,8 @@ public class HarnessEngine {
                 try (Scope loopScope = loopSpan.makeCurrent()) {
                     log.info("Harness iteration {}/{}", currentIteration, maxIterations);
 
-                    // Call LLM
-                    Map<String, Object> response = llmClient.chatCompletion(messages, null);
+                    // Call LLM with formatted MCP tools
+                    Map<String, Object> response = llmClient.chatCompletion(messages, openAiTools.isEmpty() ? null : openAiTools);
                     Map<String, Object> message = extractChoiceMessage(response);
 
                     if (message == null) {
@@ -224,6 +232,37 @@ public class HarnessEngine {
     }
 
     @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> formatToolsForOpenAi(List<Map<String, Object>> mcpTools) {
+        if (mcpTools == null || mcpTools.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<Map<String, Object>> openAiTools = new ArrayList<>();
+        for (Map<String, Object> tool : mcpTools) {
+            if (tool == null) continue;
+            if (tool.containsKey("type") && "function".equals(tool.get("type")) && tool.containsKey("function")) {
+                openAiTools.add(tool);
+            } else if (tool.containsKey("name")) {
+                Map<String, Object> functionMap = new HashMap<>();
+                functionMap.put("name", tool.get("name"));
+                if (tool.containsKey("description") && tool.get("description") != null) {
+                    functionMap.put("description", tool.get("description"));
+                }
+                Object params = tool.get("inputSchema");
+                if (params == null) {
+                    params = tool.get("parameters");
+                }
+                if (params != null) {
+                    functionMap.put("parameters", params);
+                } else {
+                    functionMap.put("parameters", Map.of("type", "object", "properties", Map.of()));
+                }
+                openAiTools.add(Map.of("type", "function", "function", functionMap));
+            }
+        }
+        return openAiTools;
+    }
+
+    @SuppressWarnings("unchecked")
     private Map<String, Object> extractChoiceMessage(Map<String, Object> response) {
         if (response == null || !response.containsKey("choices")) return null;
         List<Map<String, Object>> choices = (List<Map<String, Object>>) response.get("choices");
@@ -233,8 +272,22 @@ public class HarnessEngine {
 
     @SuppressWarnings("unchecked")
     private List<Map<String, Object>> extractToolCalls(Map<String, Object> message) {
-        if (message == null || !message.containsKey("tool_calls")) return null;
-        return (List<Map<String, Object>>) message.get("tool_calls");
+        if (message == null) return null;
+        if (message.containsKey("tool_calls") && message.get("tool_calls") instanceof List) {
+            List<Map<String, Object>> calls = (List<Map<String, Object>>) message.get("tool_calls");
+            if (calls != null && !calls.isEmpty()) {
+                return calls;
+            }
+        }
+        if (message.containsKey("function_call") && message.get("function_call") instanceof Map) {
+            Map<String, Object> fnCall = (Map<String, Object>) message.get("function_call");
+            return List.of(Map.of(
+                    "id", "call_" + System.currentTimeMillis(),
+                    "type", "function",
+                    "function", fnCall
+            ));
+        }
+        return null;
     }
 
     @SuppressWarnings("unchecked")
@@ -248,7 +301,21 @@ public class HarnessEngine {
         Map<String, Object> function = (Map<String, Object>) toolCall.get("function");
         if (function == null || !function.containsKey("arguments")) return Map.of();
         Object args = function.get("arguments");
-        if (args instanceof Map) return (Map<String, Object>) args;
+        if (args instanceof Map) {
+            return (Map<String, Object>) args;
+        }
+        if (args instanceof String) {
+            String strArgs = (String) args;
+            if (strArgs.isBlank()) {
+                return Map.of();
+            }
+            try {
+                return objectMapper.readValue(strArgs, Map.class);
+            } catch (Exception e) {
+                log.warn("Failed to parse tool call arguments string: {}", strArgs, e);
+                return Map.of("raw", strArgs);
+            }
+        }
         return Map.of("raw", args.toString());
     }
 }
