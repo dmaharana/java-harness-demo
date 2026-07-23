@@ -40,6 +40,39 @@ public class HarnessController {
         return ResponseEntity.ok(result);
     }
 
+    @PostMapping(value = "/intent/stream", produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
+    public org.springframework.web.servlet.mvc.method.annotation.SseEmitter triggerFlowStream(@RequestBody Map<String, String> payload) {
+        String intent = payload.get("intent");
+        org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter = new org.springframework.web.servlet.mvc.method.annotation.SseEmitter(0L);
+
+        if (intent == null || intent.isBlank()) {
+            try {
+                emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event().name("error").data(Map.of("error", "Property 'intent' is required in request body")));
+                emitter.complete();
+            } catch (Exception e) {
+                emitter.completeWithError(e);
+            }
+            return emitter;
+        }
+
+        java.util.concurrent.Executors.newSingleThreadExecutor().submit(() -> {
+            try {
+                harnessEngine.executeIntentStream(intent, event -> {
+                    try {
+                        emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event().name("trace").data(event));
+                    } catch (Exception e) {
+                        // ignore broken pipe if client disconnects
+                    }
+                });
+                emitter.complete();
+            } catch (Exception e) {
+                emitter.completeWithError(e);
+            }
+        });
+
+        return emitter;
+    }
+
     @PostMapping("/cron")
     public ResponseEntity<Map<String, Object>> createCronJob(@RequestBody Map<String, Object> payload) {
         String jobId = payload.get("jobId") != null ? payload.get("jobId").toString() : null;

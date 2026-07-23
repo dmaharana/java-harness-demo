@@ -49,6 +49,10 @@ public class HarnessEngine {
     }
 
     public Map<String, Object> executeIntent(String userIntent) {
+        return executeIntentStream(userIntent, null);
+    }
+
+    public Map<String, Object> executeIntentStream(String userIntent, java.util.function.Consumer<Map<String, Object>> listener) {
         Span rootSpan = tracer.spanBuilder("harness.intent_execution")
                 .setAttribute("user.intent", userIntent)
                 .startSpan();
@@ -145,24 +149,34 @@ public class HarnessEngine {
                                     "content", toolResult
                             ));
 
-                            executionHistory.add(Map.of(
+                            Map<String, Object> stepMap = Map.of(
                                     "iteration", currentIteration,
                                     "action", "TOOL_CALL",
                                     "tool", functionName,
                                     "args", arguments,
                                     "result", toolResult
-                            ));
+                            );
+                            executionHistory.add(stepMap);
+
+                            if (listener != null) {
+                                listener.accept(Map.of("type", "STEP", "step", stepMap));
+                            }
                         }
                     } else {
                         // Final Answer from LLM
                         finalAnswer = content != null ? content : "Completed intent processing.";
                         log.info("Harness completed with final answer at iteration {}: {}", currentIteration, finalAnswer);
 
-                        executionHistory.add(Map.of(
+                        Map<String, Object> stepMap = Map.of(
                                 "iteration", currentIteration,
                                 "action", "FINAL_ANSWER",
                                 "content", finalAnswer
-                        ));
+                        );
+                        executionHistory.add(stepMap);
+
+                        if (listener != null) {
+                            listener.accept(Map.of("type", "STEP", "step", stepMap));
+                        }
 
                         loopSpan.setAttribute("harness.step_status", "FINAL_ANSWER");
                         rootSpan.setAttribute("harness.status", "SUCCESS");
@@ -172,11 +186,17 @@ public class HarnessEngine {
                     loopSpan.recordException(e);
                     encounteredError = true;
                     log.error("Error during harness loop step {}: {}", currentIteration, e.getMessage(), e);
-                    executionHistory.add(Map.of(
+
+                    Map<String, Object> stepMap = Map.of(
                             "iteration", currentIteration,
                             "action", "ERROR",
                             "error", e.getMessage()
-                    ));
+                    );
+                    executionHistory.add(stepMap);
+
+                    if (listener != null) {
+                        listener.accept(Map.of("type", "STEP", "step", stepMap));
+                    }
                     break;
                 } finally {
                     loopSpan.end();
@@ -191,9 +211,14 @@ public class HarnessEngine {
             // Step 4: Post-Run Self-Reflection Step for Self-Improvement
             if (properties.getMemory().isReflectionEnabled() && (encounteredError || currentIteration > 1)) {
                 performSelfReflection(userIntent, executionHistory, newLessonsLearned);
+                if (listener != null && !newLessonsLearned.isEmpty()) {
+                    for (String lesson : newLessonsLearned) {
+                        listener.accept(Map.of("type", "LESSON", "lesson", lesson));
+                    }
+                }
             }
 
-            return Map.of(
+            Map<String, Object> finalResult = Map.of(
                     "intent", userIntent,
                     "finalAnswer", finalAnswer,
                     "iterationsCount", currentIteration,
@@ -203,14 +228,24 @@ public class HarnessEngine {
                     "executionTrace", executionHistory
             );
 
+            if (listener != null) {
+                listener.accept(Map.of("type", "COMPLETE", "result", finalResult));
+            }
+
+            return finalResult;
+
         } catch (Exception e) {
             rootSpan.recordException(e);
             log.error("Harness execution failed for intent [{}]: {}", userIntent, e.getMessage(), e);
-            return Map.of(
+            Map<String, Object> failResult = Map.of(
                     "intent", userIntent,
                     "error", e.getMessage(),
                     "status", "FAILED"
             );
+            if (listener != null) {
+                listener.accept(Map.of("type", "ERROR", "error", e.getMessage()));
+            }
+            return failResult;
         } finally {
             rootSpan.end();
         }
