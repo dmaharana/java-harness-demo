@@ -1,6 +1,7 @@
 package com.example.demo.harness;
 
 import com.example.demo.config.HarnessProperties;
+import com.example.demo.cron.CronTaskService;
 import com.example.demo.llm.OpenAiLlmClientService;
 import com.example.demo.mcp.McpHttpClientService;
 import com.example.demo.memory.MemoryService;
@@ -24,6 +25,7 @@ class HarnessEngineTest {
     private MemoryService memoryService;
     private HarnessProperties properties;
     private Tracer tracer;
+    private CronTaskService cronTaskService;
     private HarnessEngine harnessEngine;
 
     @BeforeEach
@@ -31,10 +33,11 @@ class HarnessEngineTest {
         llmClient = mock(OpenAiLlmClientService.class);
         mcpClient = mock(McpHttpClientService.class);
         memoryService = mock(MemoryService.class);
+        cronTaskService = mock(CronTaskService.class);
         properties = new HarnessProperties();
         tracer = OpenTelemetry.noop().getTracer("test");
 
-        harnessEngine = new HarnessEngine(llmClient, mcpClient, memoryService, properties, tracer);
+        harnessEngine = new HarnessEngine(llmClient, mcpClient, memoryService, properties, tracer, cronTaskService);
     }
 
     @Test
@@ -91,7 +94,8 @@ class HarnessEngineTest {
         List<Map<String, Object>> capturedTools = toolsCaptor.getValue();
         assertNotNull(capturedTools);
         assertFalse(capturedTools.isEmpty());
-        assertEquals(1, capturedTools.size());
+        // 1 MCP tool + 3 internal tools = 4 total tools sent to LLM
+        assertEquals(4, capturedTools.size());
     }
 
     @Test
@@ -133,5 +137,39 @@ class HarnessEngineTest {
         assertEquals("Found 2 users", result.get("finalAnswer"));
 
         verify(mcpClient).executeTool(eq("search_users"), eq(Map.of("location", "Miami")));
+    }
+
+    @Test
+    void testExecuteIntent_ExecutesInternalScheduleCronTool() {
+        when(mcpClient.listTools()).thenReturn(Map.of("tools", List.of()));
+        when(mcpClient.extractTools(any())).thenReturn(List.of());
+        when(memoryService.loadMemory()).thenReturn("");
+
+        Map<String, Object> toolCall = Map.of(
+                "id", "call_cron_123",
+                "type", "function",
+                "function", Map.of(
+                        "name", HarnessEngine.TOOL_SCHEDULE_CRON_INTENT,
+                        "arguments", Map.of("jobId", "metric-job", "intent", "Check system status", "intervalSeconds", 60)
+                )
+        );
+        Map<String, Object> firstLlmMsg = Map.of("role", "assistant", "tool_calls", List.of(toolCall));
+        Map<String, Object> firstLlmResp = Map.of("choices", List.of(Map.of("message", firstLlmMsg)));
+
+        Map<String, Object> secondLlmMsg = Map.of("role", "assistant", "content", "Cron job metric-job scheduled");
+        Map<String, Object> secondLlmResp = Map.of("choices", List.of(Map.of("message", secondLlmMsg)));
+
+        when(llmClient.chatCompletion(anyList(), anyList()))
+                .thenReturn(firstLlmResp)
+                .thenReturn(secondLlmResp);
+
+        when(cronTaskService.scheduleJob(eq("metric-job"), eq("Check system status"), isNull(), eq(60L)))
+                .thenReturn(Map.of("status", "SUCCESS", "jobId", "metric-job"));
+
+        Map<String, Object> result = harnessEngine.executeIntent("Schedule system check every minute");
+        assertEquals("Cron job metric-job scheduled", result.get("finalAnswer"));
+
+        verify(cronTaskService).scheduleJob("metric-job", "Check system status", null, 60L);
+        verify(mcpClient, never()).executeTool(eq(HarnessEngine.TOOL_SCHEDULE_CRON_INTENT), anyMap());
     }
 }

@@ -14,6 +14,7 @@ public class HarnessProperties {
     private Mcp mcp = new Mcp();
     private Engine engine = new Engine();
     private Memory memory = new Memory();
+    private Cron cron = new Cron();
 
     public Llm getLlm() {
         return llm;
@@ -45,6 +46,14 @@ public class HarnessProperties {
 
     public void setMemory(Memory memory) {
         this.memory = memory;
+    }
+
+    public Cron getCron() {
+        return cron;
+    }
+
+    public void setCron(Cron cron) {
+        this.cron = cron;
     }
 
     public static class Llm {
@@ -173,6 +182,75 @@ public class HarnessProperties {
 
         public void setReflectionEnabled(boolean reflectionEnabled) {
             this.reflectionEnabled = reflectionEnabled;
+        }
+    }
+
+    public static class Cron {
+        private boolean enabled = true;
+        private int poolSize = 5;
+        private java.util.List<ScheduledIntentConfig> scheduledIntents = new java.util.ArrayList<>();
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getPoolSize() {
+            return poolSize;
+        }
+
+        public void setPoolSize(int poolSize) {
+            this.poolSize = poolSize;
+        }
+
+        public java.util.List<ScheduledIntentConfig> getScheduledIntents() {
+            return scheduledIntents;
+        }
+
+        public void setScheduledIntents(java.util.List<ScheduledIntentConfig> scheduledIntents) {
+            this.scheduledIntents = scheduledIntents;
+        }
+    }
+
+    public static class ScheduledIntentConfig {
+        private String id;
+        private String intent;
+        private String cronExpression;
+        private Long intervalSeconds;
+
+        public String getId() {
+            return id;
+        }
+
+        public void setId(String id) {
+            this.id = id;
+        }
+
+        public String getIntent() {
+            return intent;
+        }
+
+        public void setIntent(String intent) {
+            this.intent = intent;
+        }
+
+        public String getCronExpression() {
+            return cronExpression;
+        }
+
+        public void setCronExpression(String cronExpression) {
+            this.cronExpression = cronExpression;
+        }
+
+        public Long getIntervalSeconds() {
+            return intervalSeconds;
+        }
+
+        public void setIntervalSeconds(Long intervalSeconds) {
+            this.intervalSeconds = intervalSeconds;
         }
     }
 }

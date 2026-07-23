@@ -22,6 +22,10 @@ harness:
     enabled: true
     file-path: ${HARNESS_MEMORY_FILE:AGENTS.md}
     reflection-enabled: true
+  cron:
+    enabled: true
+    pool-size: 5
+    scheduled-intents: []
 
 otel:
   exporter:

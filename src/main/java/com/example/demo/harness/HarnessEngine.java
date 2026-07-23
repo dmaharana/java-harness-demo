@@ -1,6 +1,7 @@
 package com.example.demo.harness;
 
 import com.example.demo.config.HarnessProperties;
+import com.example.demo.cron.CronTaskService;
 import com.example.demo.llm.OpenAiLlmClientService;
 import com.example.demo.mcp.McpHttpClientService;
 import com.example.demo.memory.MemoryService;
@@ -10,6 +11,7 @@ import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -19,23 +21,30 @@ public class HarnessEngine {
 
     private static final Logger log = LoggerFactory.getLogger(HarnessEngine.class);
 
+    public static final String TOOL_SCHEDULE_CRON_INTENT = "schedule_cron_intent";
+    public static final String TOOL_LIST_CRON_JOBS = "list_cron_jobs";
+    public static final String TOOL_CANCEL_CRON_JOB = "cancel_cron_job";
+
     private final OpenAiLlmClientService llmClient;
     private final McpHttpClientService mcpClient;
     private final MemoryService memoryService;
     private final HarnessProperties properties;
     private final Tracer tracer;
+    private final CronTaskService cronTaskService;
     private final ObjectMapper objectMapper;
 
     public HarnessEngine(OpenAiLlmClientService llmClient,
                          McpHttpClientService mcpClient,
                          MemoryService memoryService,
                          HarnessProperties properties,
-                         Tracer tracer) {
+                         Tracer tracer,
+                         @Lazy CronTaskService cronTaskService) {
         this.llmClient = llmClient;
         this.mcpClient = mcpClient;
         this.memoryService = memoryService;
         this.properties = properties;
         this.tracer = tracer;
+        this.cronTaskService = cronTaskService;
         this.objectMapper = new ObjectMapper();
     }
 
@@ -50,7 +59,7 @@ public class HarnessEngine {
         try (Scope scope = rootSpan.makeCurrent()) {
             log.info("Starting Harness execution for intent: {}", userIntent);
 
-            // Step 1: Discover Tools from MCP Server
+            // Step 1: Discover Tools from MCP Server & Combine with Internal Tools
             Map<String, Object> availableToolsResponse = mcpClient.listTools();
             List<Map<String, Object>> toolsList = mcpClient.extractTools(availableToolsResponse);
             if (toolsList.isEmpty()) {
@@ -58,7 +67,8 @@ public class HarnessEngine {
             }
             rootSpan.setAttribute("harness.mcp.tools_available", !toolsList.isEmpty());
 
-            List<Map<String, Object>> openAiTools = formatToolsForOpenAi(toolsList);
+            List<Map<String, Object>> openAiTools = new ArrayList<>(formatToolsForOpenAi(toolsList));
+            openAiTools.addAll(getInternalTools());
 
             // Step 2: Load AGENTS.md / MEMORY.md persistent memory
             String agentMemory = memoryService.loadMemory();
@@ -67,7 +77,7 @@ public class HarnessEngine {
             // Step 3: Assemble System & User Context with Injected Memory
             StringBuilder systemPrompt = new StringBuilder();
             systemPrompt.append("You are an autonomous agent operating within a Harness Engineering system. ")
-                    .append("Your goal is to solve the user's intent reliably using available MCP tools. ")
+                    .append("Your goal is to solve the user's intent reliably using available MCP tools and internal tools. ")
                     .append("Follow verification loops, check outputs, and avoid repeating failing tool calls.\n\n");
 
             if (!agentMemory.isBlank()) {
@@ -94,7 +104,7 @@ public class HarnessEngine {
                 try (Scope loopScope = loopSpan.makeCurrent()) {
                     log.info("Harness iteration {}/{}", currentIteration, maxIterations);
 
-                    // Call LLM with formatted MCP tools
+                    // Call LLM with formatted tools (MCP + internal)
                     Map<String, Object> response = llmClient.chatCompletion(messages, openAiTools.isEmpty() ? null : openAiTools);
                     Map<String, Object> message = extractChoiceMessage(response);
 
@@ -107,13 +117,18 @@ public class HarnessEngine {
                     List<Map<String, Object>> toolCalls = extractToolCalls(message);
 
                     if (toolCalls != null && !toolCalls.isEmpty()) {
-                        // Execute requested tools via HTTP MCP Client
+                        // Execute requested tools (Internal or MCP)
                         for (Map<String, Object> toolCall : toolCalls) {
                             String functionName = extractFunctionName(toolCall);
                             Map<String, Object> arguments = extractFunctionArgs(toolCall);
 
-                            log.info("Harness step {}: LLM requested MCP Tool call [{}]", currentIteration, functionName);
-                            String toolResult = mcpClient.executeTool(functionName, arguments);
+                            log.info("Harness step {}: LLM requested Tool call [{}]", currentIteration, functionName);
+                            String toolResult;
+                            if (isInternalTool(functionName)) {
+                                toolResult = executeInternalTool(functionName, arguments);
+                            } else {
+                                toolResult = mcpClient.executeTool(functionName, arguments);
+                            }
 
                             if (toolResult.startsWith("Error")) {
                                 encounteredError = true;
@@ -317,5 +332,86 @@ public class HarnessEngine {
             }
         }
         return Map.of("raw", args.toString());
+    }
+
+    public List<Map<String, Object>> getInternalTools() {
+        return List.of(
+                Map.of(
+                        "type", "function",
+                        "function", Map.of(
+                                "name", TOOL_SCHEDULE_CRON_INTENT,
+                                "description", "Schedule a recurring cron job process to run a user intent at a configured interval or cron expression.",
+                                "parameters", Map.of(
+                                        "type", "object",
+                                        "properties", Map.of(
+                                                "jobId", Map.of("type", "string", "description", "Optional unique job identifier"),
+                                                "intent", Map.of("type", "string", "description", "The user intent to execute periodically"),
+                                                "cronExpression", Map.of("type", "string", "description", "Standard cron expression (e.g., '0 */5 * * * *')"),
+                                                "intervalSeconds", Map.of("type", "integer", "description", "Interval in seconds between execution runs")
+                                        ),
+                                        "required", List.of("intent")
+                                )
+                        )
+                ),
+                Map.of(
+                        "type", "function",
+                        "function", Map.of(
+                                "name", TOOL_LIST_CRON_JOBS,
+                                "description", "List all currently active scheduled cron jobs and their execution metrics.",
+                                "parameters", Map.of("type", "object", "properties", Map.of())
+                        )
+                ),
+                Map.of(
+                        "type", "function",
+                        "function", Map.of(
+                                "name", TOOL_CANCEL_CRON_JOB,
+                                "description", "Cancel a running scheduled cron job by its jobId.",
+                                "parameters", Map.of(
+                                        "type", "object",
+                                        "properties", Map.of(
+                                                "jobId", Map.of("type", "string", "description", "The unique jobId to cancel")
+                                        ),
+                                        "required", List.of("jobId")
+                                )
+                        )
+                )
+        );
+    }
+
+    public boolean isInternalTool(String name) {
+        return TOOL_SCHEDULE_CRON_INTENT.equals(name) ||
+                TOOL_LIST_CRON_JOBS.equals(name) ||
+                TOOL_CANCEL_CRON_JOB.equals(name);
+    }
+
+    public String executeInternalTool(String name, Map<String, Object> arguments) {
+        try {
+            switch (name) {
+                case TOOL_SCHEDULE_CRON_INTENT:
+                    String jobId = (String) arguments.get("jobId");
+                    String intent = (String) arguments.get("intent");
+                    String cronExpression = (String) arguments.get("cronExpression");
+                    Long intervalSeconds = arguments.get("intervalSeconds") != null
+                            ? ((Number) arguments.get("intervalSeconds")).longValue()
+                            : null;
+                    Map<String, Object> schedResult = cronTaskService.scheduleJob(jobId, intent, cronExpression, intervalSeconds);
+                    return objectMapper.writeValueAsString(schedResult);
+
+                case TOOL_LIST_CRON_JOBS:
+                    List<Map<String, Object>> jobs = cronTaskService.listJobs();
+                    return objectMapper.writeValueAsString(jobs);
+
+                case TOOL_CANCEL_CRON_JOB:
+                    String cancelJobId = (String) arguments.get("jobId");
+                    Map<String, Object> cancelResult = cronTaskService.cancelJob(cancelJobId);
+                    return objectMapper.writeValueAsString(cancelResult);
+
+                default:
+                    return "Error: Unknown internal tool " + name;
+            }
+        } catch (Exception e) {
+            log.error("Error executing internal tool {}: {}", name, e.getMessage(), e);
+            return "Error executing internal tool " + name + ": " + e.getMessage();
+        }
     }
 }

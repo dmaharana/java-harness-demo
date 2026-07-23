@@ -7,6 +7,7 @@ A production-ready AI Agent Harness engineering framework built with **Spring Bo
 ## 🚀 Features
 
 - **Agentic Harness Engineering**: Implements closed-loop intent execution with verification steps and iteration safeguards.
+- **Cron Intent Execution & Scheduling**: Enables creating recurring background cron processes to run intents at specified intervals (via cron expressions or interval seconds) using Spring `ThreadPoolTaskScheduler`, REST API endpoints, or built-in agent internal tools.
 - **Self-Improving Memory (`AGENTS.md`)**: Automatically loads past lessons and rules into the system prompt and performs post-execution self-reflection to persist new error-prevention guidelines.
 - **OpenAI-Compliant LLM Client**: Integrates with OpenAI, Ollama, vLLM, or any OpenAI `/v1/chat/completions` API endpoint.
 - **HTTP MCP Tool Bridge**: Connects to remote Model Context Protocol (MCP) servers over HTTP with support for custom headers (OAuth/Bearer tokens, multi-tenant headers).
@@ -51,6 +52,8 @@ The application is configured via [`application.yml`](src/main/resources/applica
 | `harness.memory.enabled` | - | `true` | Enables persistent memory loading and updating |
 | `harness.memory.file-path` | `HARNESS_MEMORY_FILE` | `AGENTS.md` | Path to persistent memory file |
 | `harness.memory.reflection-enabled` | - | `true` | Enables post-run self-reflection for learning |
+| `harness.cron.enabled` | - | `true` | Enables background cron scheduler |
+| `harness.cron.pool-size` | - | `5` | Thread pool size for scheduled cron intents |
 | `otel.exporter.otlp.endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | OpenTelemetry OTLP Exporter Endpoint |
 | `otel.service.name` | - | `java-harness-demo` | OpenTelemetry Service Name |
 
@@ -121,9 +124,35 @@ curl -X POST http://localhost:8080/api/harness/intent \
 
 ---
 
-### 2. Inspect Active Harness Configuration
+### 2. Schedule a Recurring Intent via Cron REST API
 
-Send a `GET` request to `/api/harness/config` to view configured endpoints, headers, and memory settings:
+Send a `POST` request to `/api/harness/cron` to schedule an intent using a cron expression or interval in seconds:
+
+```bash
+curl -X POST http://localhost:8080/api/harness/cron \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jobId": "health-check-job",
+    "intent": "Analyze system health and check MCP tools status.",
+    "cronExpression": "0 */5 * * * *"
+  }'
+```
+
+#### List Active Cron Jobs
+```bash
+curl -X GET http://localhost:8080/api/harness/cron
+```
+
+#### Cancel a Cron Job
+```bash
+curl -X DELETE http://localhost:8080/api/harness/cron/health-check-job
+```
+
+---
+
+### 3. Inspect Active Harness Configuration
+
+Send a `GET` request to `/api/harness/config` to view configured endpoints, headers, memory, and cron settings:
 
 ```bash
 curl -X GET http://localhost:8080/api/harness/config
